@@ -2,19 +2,30 @@ import pygame
 import random
 import sys
 import math
+import csv
+import os
+from datetime import datetime
 
 # ======================
 # CONFIG
 # ======================
 # Grid size will be set dynamically by the user
 GRID_SIZE    = 6          # Default, will be overridden
-MAX_GRID_DIM = 720        # Maximum pixel dimension for the grid
 PANEL_HEIGHT = 180
+
+# Get screen info for fullscreen
+pygame.init()
+screen_info = pygame.display.Info()
+SCREEN_WIDTH = screen_info.current_w
+SCREEN_HEIGHT = screen_info.current_h
+
+# Calculate max grid dimension based on screen (leave room for panel)
+MAX_GRID_DIM = min(SCREEN_WIDTH, SCREEN_HEIGHT - PANEL_HEIGHT - 50)
 
 # These will be calculated based on selected grid size
 CELL_SIZE = 90
-WIDTH     = 540
-HEIGHT    = 720
+WIDTH     = SCREEN_WIDTH
+HEIGHT    = SCREEN_HEIGHT
 
 # ── Dark Fantasy Palette ──
 BG_DARK      = (10,  10,  18)
@@ -59,8 +70,8 @@ BTN_RESTART = ((110,  25,  25), (185,  50,  50))
 BTN_RESUME  = ((20,  80, 150), (45, 130, 215))
 BTN_EXIT    = ((60,  20,  60), (120,  35, 120))
 
-pygame.init()
-screen = None  # Will be initialized after grid size is selected
+# Screen will be initialized in fullscreen after grid size is selected
+screen = None
 pygame.display.set_caption("⚔  Wumpus World")
 
 try:
@@ -76,6 +87,82 @@ except Exception:
 
 clock = pygame.time.Clock()
 tick  = 0
+
+
+# ======================
+# HIGH SCORE PERSISTENCE
+# ======================
+HIGHSCORE_FILE = "wumpus_highscores.csv"
+
+def load_high_score(grid_size):
+    """Load the highest score for a specific grid size from CSV."""
+    if not os.path.exists(HIGHSCORE_FILE):
+        return 0
+    
+    try:
+        with open(HIGHSCORE_FILE, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if int(row['grid_size']) == grid_size:
+                    return int(row['score'])
+    except Exception as e:
+        print(f"Error loading high score: {e}")
+    
+    return 0
+
+
+def save_high_score(grid_size, score):
+    """Save a new high score for a specific grid size to CSV."""
+    scores = {}
+    
+    # Load existing scores
+    if os.path.exists(HIGHSCORE_FILE):
+        try:
+            with open(HIGHSCORE_FILE, 'r', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    gs = int(row['grid_size'])
+                    sc = int(row['score'])
+                    dt = row['date']
+                    scores[gs] = {'score': sc, 'date': dt}
+        except Exception as e:
+            print(f"Error reading high scores: {e}")
+    
+    # Update if new score is higher
+    current_high = scores.get(grid_size, {}).get('score', 0)
+    if score > current_high:
+        scores[grid_size] = {
+            'score': score,
+            'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Write back to CSV
+        try:
+            with open(HIGHSCORE_FILE, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=['grid_size', 'score', 'date'])
+                writer.writeheader()
+                for gs, data in sorted(scores.items()):
+                    writer.writerow({
+                        'grid_size': gs,
+                        'score': data['score'],
+                        'date': data['date']
+                    })
+        except Exception as e:
+            print(f"Error saving high score: {e}")
+
+
+def get_all_high_scores():
+    """Get all high scores as a dict {grid_size: score}."""
+    scores = {}
+    if os.path.exists(HIGHSCORE_FILE):
+        try:
+            with open(HIGHSCORE_FILE, 'r', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    scores[int(row['grid_size'])] = int(row['score'])
+        except Exception:
+            pass
+    return scores
 
 
 # ======================
@@ -170,8 +257,7 @@ class ArrowProjectile:
 
     def pixel_pos(self):
         """Return the current pixel center of the arrow."""
-        base_cx = self.col * CELL_SIZE + CELL_SIZE // 2
-        base_cy = self.row * CELL_SIZE + CELL_SIZE // 2
+        base_cx, base_cy = grid_to_screen(self.row, self.col)
         px = base_cx + self.dc * self.frac * CELL_SIZE
         py = base_cy + self.dr * self.frac * CELL_SIZE
         return int(px), int(py)
@@ -201,7 +287,7 @@ class WumpusWorld:
     def __init__(self, grid_size=6):
         self.grid_size  = grid_size
         self.num_pits   = grid_size  # Number of pits = grid size
-        self.high_score = 0
+        self.high_score = load_high_score(grid_size)  # Load from CSV
         self.game_state = "MENU"   # MENU | PLAYING | PAUSED | AIM | GAME_OVER | WIN
         self._init_board()
 
@@ -256,8 +342,8 @@ class WumpusWorld:
         self.score += pts
         if self.score > self.high_score:
             self.high_score = self.score
-        cx  = col_idx * CELL_SIZE + CELL_SIZE // 2
-        cy  = row     * CELL_SIZE + CELL_SIZE // 2
+            save_high_score(self.grid_size, self.score)  # Save to CSV
+        cx, cy = grid_to_screen(row, col_idx)
         col = WIN_COL if pts > 0 else LOSE_COL
         lbl = f"+{pts}" if pts > 0 else str(pts)
         self.popups.append([cx, cy - 10, lbl, 255, col])
@@ -369,7 +455,7 @@ class WumpusWorld:
 # ======================
 def draw_background():
     screen.fill(BG_DARK)
-    for y in range(0, GRID_SIZE * CELL_SIZE, 4):
+    for y in range(0, HEIGHT, 4):
         a = 6 if (y // 4) % 3 == 0 else 2
         s = pygame.Surface((WIDTH, 1), pygame.SRCALPHA)
         s.fill((255, 255, 255, a))
@@ -379,8 +465,9 @@ def draw_background():
 def draw_cells(game):
     for row in range(game.grid_size):
         for col in range(game.grid_size):
-            rect = pygame.Rect(col * CELL_SIZE, row * CELL_SIZE,
-                               CELL_SIZE, CELL_SIZE)
+            rect = pygame.Rect(GRID_OFFSET_X + col * CELL_SIZE, 
+                             GRID_OFFSET_Y + row * CELL_SIZE,
+                             CELL_SIZE, CELL_SIZE)
             cell = (row, col)
             if cell == (0, 0):
                 base = START_COL
@@ -411,7 +498,8 @@ def draw_cells(game):
         for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
             nr, nc = ar + dr, ac + dc
             while 0 <= nr < game.grid_size and 0 <= nc < game.grid_size:
-                hrect = pygame.Rect(nc * CELL_SIZE, nr * CELL_SIZE,
+                hrect = pygame.Rect(GRID_OFFSET_X + nc * CELL_SIZE, 
+                                    GRID_OFFSET_Y + nr * CELL_SIZE,
                                     CELL_SIZE, CELL_SIZE)
                 s = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
                 s.fill((AIM_COL[0], AIM_COL[1], AIM_COL[2], 28))
@@ -423,8 +511,7 @@ def draw_cells(game):
     # ── Draw directional arrow indicators in AIM mode ──
     if game.game_state == "AIM":
         ar, ac = game.agent_pos
-        cx = ac * CELL_SIZE + CELL_SIZE // 2
-        cy = ar * CELL_SIZE + CELL_SIZE // 2
+        cx, cy = grid_to_screen(ar, ac)
         dirs = [(-1,0,0,-28,"↑"),(1,0,0,28,"↓"),(0,-1,-28,0,"←"),(0,1,28,0,"→")]
         for dr, dc, ox, oy, sym in dirs:
             nr = ar + dr
@@ -441,13 +528,19 @@ def draw_cells(game):
                 screen.blit(surf, (tx - s.get_width()//2, ty - s.get_height()//2))
 
 
+def grid_to_screen(row, col):
+    """Convert grid coordinates to screen pixel coordinates (center of cell)."""
+    cx = GRID_OFFSET_X + col * CELL_SIZE + CELL_SIZE // 2
+    cy = GRID_OFFSET_Y + row * CELL_SIZE + CELL_SIZE // 2
+    return cx, cy
+
+
 # ======================
 # DRAW: SPRITES
 # ======================
 def draw_agent(game):
     row, col = game.agent_pos
-    cx = col * CELL_SIZE + CELL_SIZE // 2
-    cy = row * CELL_SIZE + CELL_SIZE // 2
+    cx, cy = grid_to_screen(row, col)
 
     # In AIM mode, use orange glow
     glow_col  = AIM_COL  if game.game_state == "AIM" else AGENT_GLOW
@@ -481,8 +574,7 @@ def draw_gold(game):
     if game.has_gold:
         return
     row, col = game.gold
-    cx = col * CELL_SIZE + CELL_SIZE // 2
-    cy = row * CELL_SIZE + CELL_SIZE // 2
+    cx, cy = grid_to_screen(row, col)
     r  = int(pulse(18, 4, speed=2))
     draw_glow_circle(screen, GOLD_GLOW, (cx, cy), r, layers=8, alpha_step=22)
     angle = tick * 2
@@ -500,8 +592,7 @@ def draw_wumpus(game):
     if not game.wumpus_alive:
         return
     row, col = game.wumpus
-    cx = col * CELL_SIZE + CELL_SIZE // 2
-    cy = row * CELL_SIZE + CELL_SIZE // 2
+    cx, cy = grid_to_screen(row, col)
     r  = int(pulse(24, 5, speed=1.5))
     draw_glow_circle(screen, WUMPUS_GLOW, (cx, cy), r, layers=8, alpha_step=25)
     pygame.draw.circle(screen, WUMPUS_GLOW,  (cx, cy), r + 2)
@@ -518,8 +609,7 @@ def draw_wumpus(game):
 def draw_dead_wumpus(game):
     """Draw a skull / X where the wumpus was, briefly."""
     row, col = game.wumpus
-    cx = col * CELL_SIZE + CELL_SIZE // 2
-    cy = row * CELL_SIZE + CELL_SIZE // 2
+    cx, cy = grid_to_screen(row, col)
     # Faded X marks the spot
     col_dim = (80, 30, 40)
     pygame.draw.line(screen, col_dim, (cx-14, cy-14), (cx+14, cy+14), 3)
@@ -530,8 +620,7 @@ def draw_dead_wumpus(game):
 
 def draw_pits(game):
     for row, col in game.pits:
-        cx = col * CELL_SIZE + CELL_SIZE // 2
-        cy = row * CELL_SIZE + CELL_SIZE // 2
+        cx, cy = grid_to_screen(row, col)
         for col_r, radius in [(PIT_GLOW, 28), (PIT_RIM, 22), (PIT_COL, 16)]:
             draw_glow_circle(screen, col_r, (cx, cy), radius, layers=3, alpha_step=15)
             pygame.draw.circle(screen, col_r, (cx, cy), radius)
@@ -564,20 +653,24 @@ def draw_popups(game):
 def draw_aim_overlay():
     """Semi-transparent pulsing border around the grid in AIM mode."""
     alpha = int(60 + 40 * math.sin(tick * 0.15))
-    border_surf = pygame.Surface((WIDTH, GRID_SIZE * CELL_SIZE), pygame.SRCALPHA)
+    grid_w = GRID_SIZE * CELL_SIZE
+    grid_h = GRID_SIZE * CELL_SIZE
+    border_surf = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
     pygame.draw.rect(border_surf, (*AIM_COL, alpha),
-                     (0, 0, WIDTH, GRID_SIZE * CELL_SIZE), 6)
-    screen.blit(border_surf, (0, 0))
+                     (0, 0, grid_w, grid_h), 6)
+    screen.blit(border_surf, (GRID_OFFSET_X, GRID_OFFSET_Y))
 
 
 # ======================
 # DRAW: OVERLAYS
 # ======================
 def draw_pause_overlay():
-    o = pygame.Surface((WIDTH, GRID_SIZE * CELL_SIZE), pygame.SRCALPHA)
+    grid_w = GRID_SIZE * CELL_SIZE
+    grid_h = GRID_SIZE * CELL_SIZE
+    o = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
     o.fill((0, 0, 0, 145))
-    screen.blit(o, (0, 0))
-    cx, cy = WIDTH // 2, GRID_SIZE * CELL_SIZE // 2
+    screen.blit(o, (GRID_OFFSET_X, GRID_OFFSET_Y))
+    cx, cy = WIDTH // 2, GRID_OFFSET_Y + grid_h // 2
     draw_glow_circle(screen, (30, 55, 115), (cx, cy), 80, layers=8, alpha_step=13)
     card = pygame.Rect(cx-155, cy-65, 310, 130)
     draw_rrect(screen, (15, 15, 28), card, radius=16, border=2, bcol=PAUSE_COL)
@@ -589,14 +682,16 @@ def draw_pause_overlay():
 
 
 def draw_end_screen(game):
-    o = pygame.Surface((WIDTH, GRID_SIZE * CELL_SIZE), pygame.SRCALPHA)
+    grid_w = GRID_SIZE * CELL_SIZE
+    grid_h = GRID_SIZE * CELL_SIZE
+    o = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
     o.fill((0, 0, 0, 160))
-    screen.blit(o, (0, 0))
+    screen.blit(o, (GRID_OFFSET_X, GRID_OFFSET_Y))
     win     = game.game_state == "WIN"
     col     = WIN_COL   if win else LOSE_COL
     glow    = (20, 100, 50) if win else (100, 20, 30)
     heading = "VICTORY!" if win else "DEFEAT"
-    cx, cy  = WIDTH // 2, GRID_SIZE * CELL_SIZE // 2
+    cx, cy  = WIDTH // 2, GRID_OFFSET_Y + GRID_SIZE * CELL_SIZE // 2
     draw_glow_circle(screen, glow, (cx, cy), 90, layers=10, alpha_step=17)
     card = pygame.Rect(cx-190, cy-95, 380, 190)
     draw_rrect(screen, (14, 14, 26), card, radius=16, border=2, bcol=col)
@@ -609,9 +704,15 @@ def draw_end_screen(game):
     screen.blit(sc, (cx - sc.get_width()//2, cy + 12))
     hi = small_font.render(f"High Score: {game.high_score}", True, TEXT_DIM)
     screen.blit(hi, (cx - hi.get_width()//2, cy + 50))
+    
+    # Show if this is a new high score
+    if game.score == game.high_score and game.score > 0:
+        new_hs = tiny_font.render("★ NEW HIGH SCORE! ★", True, GOLD_COL)
+        screen.blit(new_hs, (cx - new_hs.get_width()//2, cy + 72))
+    
     if win:
         ex = tiny_font.render("Exiting automatically...", True, TEXT_DIM)
-        screen.blit(ex, (cx - ex.get_width()//2, cy + 78))
+        screen.blit(ex, (cx - ex.get_width()//2, cy + 92))
 
 
 def draw_menu_screen():
@@ -654,7 +755,7 @@ def draw_menu_screen():
 # DRAW: PANEL
 # ======================
 def draw_panel(game, buttons):
-    py0  = GRID_SIZE * CELL_SIZE
+    py0  = HEIGHT - PANEL_HEIGHT
     prect = pygame.Rect(0, py0, WIDTH, PANEL_HEIGHT)
     draw_rrect(screen, PANEL_BG, prect, radius=0)
     pygame.draw.line(screen, PANEL_BORDER, (0, py0), (WIDTH, py0), 2)
@@ -732,7 +833,7 @@ def draw_panel(game, buttons):
 # BUILD BUTTONS
 # ======================
 def build_buttons(state):
-    py0 = GRID_SIZE * CELL_SIZE
+    py0 = HEIGHT - PANEL_HEIGHT
     by  = py0 + PANEL_HEIGHT - 50
     bw, bh, gap = 100, 38, 10
 
@@ -774,19 +875,32 @@ def build_buttons(state):
 # ======================
 # DIMENSION HELPERS
 # ======================
+GRID_OFFSET_X = 0  # X offset to center grid
+GRID_OFFSET_Y = 0  # Y offset to center grid
+
 def calculate_dimensions(grid_size):
-    """Calculate cell size and window dimensions for given grid size."""
-    global GRID_SIZE, CELL_SIZE, WIDTH, HEIGHT
+    """Calculate cell size and grid position for given grid size in fullscreen."""
+    global GRID_SIZE, CELL_SIZE, WIDTH, HEIGHT, GRID_OFFSET_X, GRID_OFFSET_Y
     GRID_SIZE = grid_size
-    CELL_SIZE = min(90, MAX_GRID_DIM // grid_size)  # Scale down for large grids
-    WIDTH     = GRID_SIZE * CELL_SIZE
-    HEIGHT    = GRID_SIZE * CELL_SIZE + PANEL_HEIGHT
+    WIDTH     = SCREEN_WIDTH
+    HEIGHT    = SCREEN_HEIGHT
+    
+    # Calculate cell size to fit the screen
+    max_cell_w = (SCREEN_WIDTH - 100) // grid_size
+    max_cell_h = (SCREEN_HEIGHT - PANEL_HEIGHT - 100) // grid_size
+    CELL_SIZE = min(max_cell_w, max_cell_h, 120)  # Cap at 120px per cell
+    
+    # Calculate offsets to center the grid
+    grid_width = GRID_SIZE * CELL_SIZE
+    grid_height = GRID_SIZE * CELL_SIZE
+    GRID_OFFSET_X = (SCREEN_WIDTH - grid_width) // 2
+    GRID_OFFSET_Y = (SCREEN_HEIGHT - PANEL_HEIGHT - grid_height) // 2
 
 
 def init_screen():
-    """Create/recreate the pygame screen with current dimensions."""
+    """Create/recreate the pygame screen in fullscreen mode."""
     global screen
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
     pygame.display.set_caption("⚔  Wumpus World")
 
 
@@ -808,6 +922,9 @@ def draw_grid_size_menu():
     sub = med_font.render("Choose your dungeon difficulty", True, TEXT_DIM)
     screen.blit(sub, (cx - sub.get_width()//2, cy - 95))
     
+    # Load all high scores
+    all_scores = get_all_high_scores()
+    
     # Grid size options as buttons
     sizes = [4, 6, 8, 10, 16]
     labels = ["Easy", "Normal", "Hard", "Expert", "Insane"]
@@ -827,6 +944,12 @@ def draw_grid_size_menu():
         # Draw difficulty label below button
         diff_label = tiny_font.render(label, True, TEXT_DIM)
         screen.blit(diff_label, (x + btn_w//2 - diff_label.get_width()//2, y + btn_h + 8))
+        
+        # Draw high score below difficulty
+        high = all_scores.get(size, 0)
+        if high > 0:
+            hs_label = tiny_font.render(f"Best: {high}", True, GOLD_COL)
+            screen.blit(hs_label, (x + btn_w//2 - hs_label.get_width()//2, y + btn_h + 26))
     
     return size_buttons
 
@@ -867,6 +990,10 @@ def main():
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
                 
                 for btn in grid_size_buttons:
                     if btn.clicked(event):
@@ -965,10 +1092,12 @@ def main():
                     if event.key == pygame.K_g:     game.grab()
                     if event.key == pygame.K_r:     game.restart()
                     if event.key == pygame.K_p:     game.game_state = "PAUSED"
+                    if event.key == pygame.K_ESCAPE: running = False
 
                 elif game.game_state == "PAUSED":
                     if event.key == pygame.K_p:     game.game_state = "PLAYING"
                     if event.key == pygame.K_r:     game.restart()
+                    if event.key == pygame.K_ESCAPE: running = False
 
         # Rebuild buttons only when state changes
         if game.game_state != prev_state:
