@@ -6,13 +6,15 @@ import math
 # ======================
 # CONFIG
 # ======================
-GRID_SIZE    = 6
-CELL_SIZE    = 90
-NUM_PITS     = GRID_SIZE
+# Grid size will be set dynamically by the user
+GRID_SIZE    = 6          # Default, will be overridden
+MAX_GRID_DIM = 720        # Maximum pixel dimension for the grid
 PANEL_HEIGHT = 180
 
-WIDTH  = GRID_SIZE * CELL_SIZE
-HEIGHT = GRID_SIZE * CELL_SIZE + PANEL_HEIGHT
+# These will be calculated based on selected grid size
+CELL_SIZE = 90
+WIDTH     = 540
+HEIGHT    = 720
 
 # ── Dark Fantasy Palette ──
 BG_DARK      = (10,  10,  18)
@@ -58,7 +60,7 @@ BTN_RESUME  = ((20,  80, 150), (45, 130, 215))
 BTN_EXIT    = ((60,  20,  60), (120,  35, 120))
 
 pygame.init()
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
+screen = None  # Will be initialized after grid size is selected
 pygame.display.set_caption("⚔  Wumpus World")
 
 try:
@@ -196,7 +198,9 @@ class ArrowProjectile:
 # GAME CLASS
 # ======================
 class WumpusWorld:
-    def __init__(self):
+    def __init__(self, grid_size=6):
+        self.grid_size  = grid_size
+        self.num_pits   = grid_size  # Number of pits = grid size
         self.high_score = 0
         self.game_state = "MENU"   # MENU | PLAYING | PAUSED | AIM | GAME_OVER | WIN
         self._init_board()
@@ -218,23 +222,23 @@ class WumpusWorld:
         self.wumpus = self._rand(exclude=[(0, 0)])
         self.gold   = self._rand(exclude=[(0, 0), self.wumpus])
         self.pits   = []
-        for _ in range(NUM_PITS):
+        for _ in range(self.num_pits):
             p = self._rand(exclude=[(0,0), self.wumpus, self.gold] + self.pits)
             self.pits.append(p)
 
     def _rand(self, exclude=[]):
         while True:
-            c = (random.randint(0, GRID_SIZE-1), random.randint(0, GRID_SIZE-1))
+            c = (random.randint(0, self.grid_size-1), random.randint(0, self.grid_size-1))
             if c not in exclude:
                 return c
 
     def adjacent(self, pos):
         x, y = pos
         nb = []
-        if x > 0:           nb.append((x-1, y))
-        if x < GRID_SIZE-1: nb.append((x+1, y))
-        if y > 0:           nb.append((x, y-1))
-        if y < GRID_SIZE-1: nb.append((x, y+1))
+        if x > 0:                  nb.append((x-1, y))
+        if x < self.grid_size-1:   nb.append((x+1, y))
+        if y > 0:                  nb.append((x, y-1))
+        if y < self.grid_size-1:   nb.append((x, y+1))
         return nb
 
     def percepts(self):
@@ -284,7 +288,7 @@ class WumpusWorld:
                 self.message = "Wumpus slain! +300 (-50 arrow)"
                 return
             # Check out of bounds
-            if not (0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE):
+            if not (0 <= r < self.grid_size and 0 <= c < self.grid_size):
                 self.arrow.done = True
                 self.message    = "Arrow missed! (-50 charged on fire)"
 
@@ -317,7 +321,7 @@ class WumpusWorld:
             return
         x, y   = self.agent_pos
         nx, ny = x + dx, y + dy
-        if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+        if 0 <= nx < self.grid_size and 0 <= ny < self.grid_size:
             self.agent_pos = (nx, ny)
             self.visited.add((nx, ny))
             safe = ((nx, ny) not in self.pits and
@@ -373,8 +377,8 @@ def draw_background():
 
 
 def draw_cells(game):
-    for row in range(GRID_SIZE):
-        for col in range(GRID_SIZE):
+    for row in range(game.grid_size):
+        for col in range(game.grid_size):
             rect = pygame.Rect(col * CELL_SIZE, row * CELL_SIZE,
                                CELL_SIZE, CELL_SIZE)
             cell = (row, col)
@@ -406,7 +410,7 @@ def draw_cells(game):
         ar, ac = game.agent_pos
         for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
             nr, nc = ar + dr, ac + dc
-            while 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+            while 0 <= nr < game.grid_size and 0 <= nc < game.grid_size:
                 hrect = pygame.Rect(nc * CELL_SIZE, nr * CELL_SIZE,
                                     CELL_SIZE, CELL_SIZE)
                 s = pygame.Surface((CELL_SIZE, CELL_SIZE), pygame.SRCALPHA)
@@ -425,7 +429,7 @@ def draw_cells(game):
         for dr, dc, ox, oy, sym in dirs:
             nr = ar + dr
             nc = ac + dc
-            if 0 <= nr < GRID_SIZE and 0 <= nc < GRID_SIZE:
+            if 0 <= nr < game.grid_size and 0 <= nc < game.grid_size:
                 tx = cx + ox
                 ty = cy + oy
                 # Pulsing indicator
@@ -768,19 +772,118 @@ def build_buttons(state):
 
 
 # ======================
+# DIMENSION HELPERS
+# ======================
+def calculate_dimensions(grid_size):
+    """Calculate cell size and window dimensions for given grid size."""
+    global GRID_SIZE, CELL_SIZE, WIDTH, HEIGHT
+    GRID_SIZE = grid_size
+    CELL_SIZE = min(90, MAX_GRID_DIM // grid_size)  # Scale down for large grids
+    WIDTH     = GRID_SIZE * CELL_SIZE
+    HEIGHT    = GRID_SIZE * CELL_SIZE + PANEL_HEIGHT
+
+
+def init_screen():
+    """Create/recreate the pygame screen with current dimensions."""
+    global screen
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("⚔  Wumpus World")
+
+
+def draw_grid_size_menu():
+    """Draw menu with grid size selection buttons."""
+    screen.fill(BG_DARK)
+    for y in range(0, HEIGHT, 4):
+        a = 5 if (y//4) % 3 == 0 else 2
+        s = pygame.Surface((WIDTH, 1), pygame.SRCALPHA)
+        s.fill((255, 255, 255, a))
+        screen.blit(s, (0, y))
+    
+    cx, cy = WIDTH//2, HEIGHT//2 - 100
+    draw_glow_circle(screen, (40, 28, 100), (cx, cy), 130, layers=12, alpha_step=11)
+    
+    t = big_font.render("SELECT GRID SIZE", True, TEXT_ACCENT)
+    screen.blit(t, (cx - t.get_width()//2, cy - 140))
+    
+    sub = med_font.render("Choose your dungeon difficulty", True, TEXT_DIM)
+    screen.blit(sub, (cx - sub.get_width()//2, cy - 95))
+    
+    # Grid size options as buttons
+    sizes = [4, 6, 8, 10, 16]
+    labels = ["Easy", "Normal", "Hard", "Expert", "Insane"]
+    btn_w, btn_h = 100, 60
+    gap = 20
+    total_width = len(sizes) * btn_w + (len(sizes) - 1) * gap
+    start_x = (WIDTH - total_width) // 2
+    
+    size_buttons = []
+    for i, (size, label) in enumerate(zip(sizes, labels)):
+        x = start_x + i * (btn_w + gap)
+        y = cy - 20
+        btn = Button((x, y, btn_w, btn_h), f"{size}×{size}", BTN_START)
+        btn.grid_size = size  # Store grid size in button
+        size_buttons.append(btn)
+        
+        # Draw difficulty label below button
+        diff_label = tiny_font.render(label, True, TEXT_DIM)
+        screen.blit(diff_label, (x + btn_w//2 - diff_label.get_width()//2, y + btn_h + 8))
+    
+    return size_buttons
+
+
+# ======================
 # MAIN LOOP
 # ======================
 def main():
-    global tick
-    game      = WumpusWorld()
-    buttons   = build_buttons(game.game_state)
-    win_timer = 0          # counts frames after WIN, then auto-exits
+    global tick, screen
+    
+    # Initial setup with default 6x6
+    calculate_dimensions(6)
+    init_screen()
+    
+    # Start with grid size selection
+    selecting_grid = True
+    grid_size_buttons = draw_grid_size_menu()
+    game = None
+    buttons = []
+    win_timer = 0
 
     running = True
     while running:
         tick += 1
-        mouse  = pygame.mouse.get_pos()
+        mouse = pygame.mouse.get_pos()
 
+        # Grid size selection phase
+        if selecting_grid:
+            for btn in grid_size_buttons:
+                btn.update(mouse)
+            
+            draw_grid_size_menu()
+            for btn in grid_size_buttons:
+                btn.draw(screen)
+            
+            pygame.display.flip()
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                
+                for btn in grid_size_buttons:
+                    if btn.clicked(event):
+                        # Grid size selected - initialize game
+                        selected_size = btn.grid_size
+                        calculate_dimensions(selected_size)
+                        init_screen()
+                        game = WumpusWorld(grid_size=selected_size)
+                        game.game_state = "MENU"
+                        buttons = build_buttons(game.game_state)
+                        selecting_grid = False
+                        break
+            
+            clock.tick(30)
+            continue
+        
+        # Normal game loop (existing code)
         for btn in buttons:
             btn.update(mouse)
         game.update_popups()
